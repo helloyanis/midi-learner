@@ -1,0 +1,62 @@
+html {
+    color-scheme: light dark;
+}
+
+body {
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial;
+    margin: 0;
+    padding: 0;
+}
+
+header {
+    background: #0b5;
+    padding: 12px;
+    color: #003;
+}
+
+main {
+    padding: 16px;
+    max-width: 980px;
+    margin: 0 auto
+}
+
+section {
+    margin: 12px 0;
+}
+
+.transport {
+    display: flex;
+    gap: 12px;
+    align-items: center
+}
+
+#channel-list label {
+    margin-right: 6px;
+    font-size: 0.9rem
+}
+
+input[type=range] {
+    width: 360px
+}
+
+.hidden {
+    display: none
+}
+
+.mode {
+    margin-right: 8px
+}
+
+.mode.active {
+    background: #0b5;
+    color: #002
+}
+
+footer {
+    margin-top: 24px;
+    color: #666
+}
+
+.file-label input {
+    margin-left: 8px
+}

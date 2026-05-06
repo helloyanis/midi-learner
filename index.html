@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>midi-learner</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>midi-learner</h1>
+  </header>
+
+  <main>
+    <section id="connect">
+      <button id="request-midi">Enable Web MIDI</button>
+      <label>Output device:
+        <select id="midi-outputs"></select>
+      </label>
+      <label>Input device (optional):
+        <select id="midi-inputs"></select>
+      </label>
+    </section>
+
+    <section id="file-section">
+      <label class="file-label">Import MIDI file
+        <input id="midi-file" type="file" accept=".mid,.midi">
+      </label>
+      <div id="file-info">No file loaded</div>
+    </section>
+
+    <section id="controls">
+      <div class="transport">
+        <button id="play">Play</button>
+        <button id="pause">Pause</button>
+        <label>Seek: <input id="seek" type="range" min="0" max="100" value="0"></label>
+        <span id="time">0.00 / 0.00 s</span>
+      </div>
+
+      <div id="channels">
+        <strong>Channels:</strong>
+        <div id="channel-list"></div>
+      </div>
+    </section>
+
+    <section id="modes">
+      <button id="mode-play" class="mode active">Play Mode</button>
+      <button id="mode-learn" class="mode">Learning Mode</button>
+      <div id="mode-content">
+        <div id="play-mode">Use the transport controls to play MIDI to the selected output device.</div>
+        <div id="learn-mode" class="hidden">Learning mode placeholder (empty)</div>
+      </div>
+    </section>
+
+    <footer>
+      <small>Works in Chromium/Chrome with Web MIDI enabled. Serve via HTTP for best results.</small>
+    </footer>
+  </main>
+
+  <!-- MidiPlayerJS is imported by app.js as an ES module -->
+  <script src="app.js" type="module"></script>
+</body>
+</html>
