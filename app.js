@@ -47,8 +47,10 @@ function init() {
         if (!player) return;
         if (learningMode && learnConfig.level === 'follow') {
             const currentTick = player.getCurrentTick ? player.getCurrentTick() : 0;
-            console.debug('[play] Learning mode active: syncing queues to tick', currentTick);
-            learnSyncQueuesToTick(currentTick);
+            const beatTicks = player && player.division ? player.division : 480;
+            const startTick = currentTick + beatTicks;
+            console.debug('[play] Learning mode active: syncing queues to tick', startTick);
+            learnSyncQueuesToTick(startTick);
             learnBindInputHandler();
             learnUpdateKeyLighting();
         }
@@ -89,10 +91,16 @@ function init() {
     $('learn-light-left').addEventListener('change', e => {
         learnConfig.lightLeft = e.target.checked;
         if (!e.target.checked) learnClearKeys('left');
+        if (loaded && learningMode && learnConfig.level === 'follow') {
+            learnBuildSongQueues();
+        }
     });
     $('learn-light-right').addEventListener('change', e => {
         learnConfig.lightRight = e.target.checked;
         if (!e.target.checked) learnClearKeys('right');
+        if (loaded && learningMode && learnConfig.level === 'follow') {
+            learnBuildSongQueues();
+        }
     });
     $('learn-nav-left').addEventListener('change', e => {
         learnConfig.navChannelLeft = clampChannel(e.target.value, 1);
@@ -120,8 +128,10 @@ function init() {
         console.debug('[learnPlay] Starting playback in learning mode');
         if (!player || !learningMode) return;
         const currentTick = player.getCurrentTick ? player.getCurrentTick() : 0;
-        console.debug('[learnPlay] syncing queues to', currentTick);
-        learnSyncQueuesToTick(currentTick);
+        const beatTicks = player && player.division ? player.division : 480;
+        const startTick = currentTick + beatTicks;
+        console.debug('[learnPlay] syncing queues to', startTick);
+        learnSyncQueuesToTick(startTick);
         learnBindInputHandler();
         learnUpdateKeyLighting();
         player.play();
@@ -132,7 +142,8 @@ function init() {
         sendAllNotesOff();
     });
 
-    setInterval(updateTime, 200);
+    // Faster follow-mode updates reduce missed-light and late-pause race conditions.
+    setInterval(updateTime, 50);
     // Read initial learn-mode controls state so persisted/checked boxes take effect
     const ll = $('learn-light-left'); if (ll) learnConfig.lightLeft = !!ll.checked;
     const lr = $('learn-light-right'); if (lr) learnConfig.lightRight = !!lr.checked;
@@ -441,6 +452,13 @@ function learnBuildSongQueues() {
 
     const leftNotes = [];
     const rightNotes = [];
+    const useLeft = !!learnConfig.lightLeft;
+    const useRight = !!learnConfig.lightRight;
+    const sameBindChannel = learnConfig.bindChannelLeft === learnConfig.bindChannelRight;
+
+    // If both hands point to the same song channel, keep only one required queue
+    // to avoid requiring the same key press twice.
+    const primaryHand = useLeft ? 'left' : (useRight ? 'right' : null);
 
     for (const trackEvents of player.events) {
         for (const event of trackEvents) {
@@ -451,18 +469,44 @@ function learnBuildSongQueues() {
                 velocity: event.velocity,
                 channel: event.channel || 1
             };
-            if (noteEvent.channel === learnConfig.bindChannelLeft) leftNotes.push(noteEvent);
-            if (noteEvent.channel === learnConfig.bindChannelRight) rightNotes.push(noteEvent);
+
+            if (sameBindChannel) {
+                if (!primaryHand) continue;
+                if (noteEvent.channel !== learnConfig.bindChannelLeft) continue;
+                if (primaryHand === 'left') leftNotes.push(noteEvent);
+                else rightNotes.push(noteEvent);
+                continue;
+            }
+
+            if (useLeft && noteEvent.channel === learnConfig.bindChannelLeft) leftNotes.push(noteEvent);
+            if (useRight && noteEvent.channel === learnConfig.bindChannelRight) rightNotes.push(noteEvent);
         }
     }
 
     leftNotes.sort((a, b) => a.tick - b.tick);
     rightNotes.sort((a, b) => a.tick - b.tick);
 
-    learnState.songNotesLeft = leftNotes;
-    learnState.songNotesRight = rightNotes;
+    // Dedupe same note at the same tick per hand (can happen with layered tracks)
+    // so one physical key press is sufficient.
+    const dedupeByTickAndNote = notes => {
+        const seen = new Set();
+        const out = [];
+        for (const n of notes) {
+            const key = n.tick + ':' + n.note;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            out.push(n);
+        }
+        return out;
+    };
+
+    const leftNotesDeduped = dedupeByTickAndNote(leftNotes);
+    const rightNotesDeduped = dedupeByTickAndNote(rightNotes);
+
+    learnState.songNotesLeft = leftNotesDeduped;
+    learnState.songNotesRight = rightNotesDeduped;
     learnResetPendingQueues(0);
-    console.debug('[learnBuildSongQueues] Built song queues: leftNotes=%d, rightNotes=%d', leftNotes.length, rightNotes.length);
+    console.debug('[learnBuildSongQueues] Built song queues: leftNotes=%d, rightNotes=%d, useLeft=%s, useRight=%s, sameBindChannel=%s', leftNotesDeduped.length, rightNotesDeduped.length, useLeft, useRight, sameBindChannel);
 }
 
 function learnResetPendingQueues(currentTick) {
@@ -524,7 +568,7 @@ function learnUpdateStatus(msg) {
     if (status) status.innerText = msg;
 }
 
-function learnLightKey(hand, noteNumber, velocity) {
+function learnLightKey(hand, noteNumber, velocity, keepLit = false) {
     if (!midiOutput) return;
     if (!learnConfig['light' + (hand === 'left' ? 'Left' : 'Right')]) return;
 
@@ -538,12 +582,15 @@ function learnLightKey(hand, noteNumber, velocity) {
         midiOutput.send([ccStatus, 7, 0]);
         midiOutput.send([noteOn, noteNumber, 1]);
         learnState['litKeys' + (hand === 'left' ? 'Left' : 'Right')].add(noteNumber);
-        setTimeout(() => {
-            midiOutput.send([noteOff, noteNumber, 0]);
-            midiOutput.send([ccStatus, 7, 100]);
-        }, 75);
+        if (!keepLit) {
+            setTimeout(() => {
+                midiOutput.send([noteOff, noteNumber, 0]);
+                midiOutput.send([ccStatus, 7, 100]);
+            }, 75);
+        }
     } else {
         midiOutput.send([noteOff, noteNumber, 0]);
+        midiOutput.send([ccStatus, 7, 100]);
         learnState['litKeys' + (hand === 'left' ? 'Left' : 'Right')].delete(noteNumber);
     }
 }
@@ -593,10 +640,12 @@ function learnHandleMidiInput(event) {
         const ticksUntilNote = groupTick - currentTick;
 
         const playerPaused = !!(player && player.isPlaying && !player.isPlaying());
+        const lateGraceTicks = Math.max(1, Math.floor(beatTicks * 0.2));
 
         // While playing, only accept presses that occur within one beat before the note.
         // If playback is paused because the note was missed, allow the correct press to resume.
-        if (!playerPaused && (ticksUntilNote < 0 || ticksUntilNote > beatTicks)) continue;
+        // Also allow a small late grace window to avoid edge races near pause checks.
+        if (!playerPaused && (ticksUntilNote < -lateGraceTicks || ticksUntilNote > beatTicks)) continue;
 
         const matched = group.find(n => n.note === note);
         if (!matched) continue;
@@ -626,6 +675,9 @@ function learnHandleMidiInput(event) {
         } catch (e) {
             console.warn('Failed to resume playback', e);
         }
+
+        // Immediately refresh target lighting so the next note appears without delay.
+        learnUpdateKeyLighting();
 
         // Clear lighting for this group if it's now empty
         if (!learnGetCurrentGroup(hand).length) {
@@ -671,11 +723,13 @@ function learnUpdateHandLighting(hand, currentTick, beatTicks) {
     const groupTick = group[0].tick;
     const ticksUntilNote = groupTick - currentTick;
 
-    if (ticksUntilNote < 0) {
+    const lateGraceTicks = Math.max(1, Math.floor(beatTicks * 0.2));
+    if (ticksUntilNote < -lateGraceTicks) {
         console.debug('[learnUpdateHandLighting] Missed note on %s hand (ticksUntilNote=%d), pausing playback', hand, ticksUntilNote);
         learnUpdateStatus('Missed note, pausing');
         for (const noteEvent of group) {
-            learnLightKey(hand, noteEvent.note, noteEvent.velocity);
+            // Keep missed notes lit while paused until user presses the correct key(s)
+            learnLightKey(hand, noteEvent.note, noteEvent.velocity, true);
         }
         if (player && player.pause) player.pause();
         return;
