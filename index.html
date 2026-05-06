@@ -48,7 +48,45 @@
       <button id="mode-learn" class="mode">Learning Mode</button>
       <div id="mode-content">
         <div id="play-mode">Use the transport controls to play MIDI to the selected output device.</div>
-        <div id="learn-mode" class="hidden">Learning mode placeholder (empty)</div>
+        <div id="learn-mode" class="hidden">
+          <div id="learn-config">
+            <h3>Learning Mode Configuration</h3>
+            <div class="config-row">
+              <label>
+                <input type="checkbox" id="learn-light-left"> Light Left Hand
+              </label>
+              <label>Left Navigation Channel: 
+                <input type="number" id="learn-nav-left" min="1" max="16" value="1" style="width:50px">
+              </label>
+              <label>Bind to Song Channel:
+                <select id="learn-bind-left"></select>
+              </label>
+            </div>
+            <div class="config-row">
+              <label>
+                <input type="checkbox" id="learn-light-right"> Light Right Hand
+              </label>
+              <label>Right Navigation Channel: 
+                <input type="number" id="learn-nav-right" min="1" max="16" value="2" style="width:50px">
+              </label>
+              <label>Bind to Song Channel:
+                <select id="learn-bind-right"></select>
+              </label>
+            </div>
+            <div class="config-row">
+              <label>Level:
+                <select id="learn-level">
+                  <option value="follow">Follow</option>
+                  <option value="remember">Remember (Placeholder)</option>
+                </select>
+              </label>
+              <button id="learn-debug">🐛 Light Random Key (Debug)</button>
+            </div>
+          </div>
+          <div id="learn-feedback">
+            <div id="learn-status">Ready</div>
+          </div>
+        </div>
       </div>
     </section>
 

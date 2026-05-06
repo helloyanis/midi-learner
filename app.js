@@ -13,6 +13,29 @@ let timeLabel = null;
 let activeNotes = new Map();
 let allowedChannels = new Array(16).fill(true);
 
+// Learning mode state
+let learningMode = false;
+let learnConfig = {
+    lightLeft: false,
+    lightRight: false,
+    navChannelLeft: 1,
+    navChannelRight: 2,
+    bindChannelLeft: 1,
+    bindChannelRight: 1,
+    level: 'follow'
+};
+let learnState = {
+    nextNotesLeft: [],
+    nextNotesRight: [],
+    litKeysLeft: new Set(),
+    litKeysRight: new Set(),
+    blinkPhase: 'slow', // 'slow' or 'fast'
+    blinkTimer: null,
+    blinkState: true,
+    lastEventTick: 0,
+    beatDuration: 0
+};
+
 function $(id) { return document.getElementById(id); }
 
 function init() {
@@ -45,6 +68,32 @@ function init() {
     $('mode-play').addEventListener('click', () => { setMode('play'); });
     $('mode-learn').addEventListener('click', () => { setMode('learn'); });
 
+    // learning mode controls
+    $('learn-light-left').addEventListener('change', e => {
+        learnConfig.lightLeft = e.target.checked;
+        if (!e.target.checked) learnClearKeys('left');
+    });
+    $('learn-light-right').addEventListener('change', e => {
+        learnConfig.lightRight = e.target.checked;
+        if (!e.target.checked) learnClearKeys('right');
+    });
+    $('learn-nav-left').addEventListener('change', e => {
+        learnConfig.navChannelLeft = Math.max(1, Math.min(16, parseInt(e.target.value) || 1));
+    });
+    $('learn-nav-right').addEventListener('change', e => {
+        learnConfig.navChannelRight = Math.max(1, Math.min(16, parseInt(e.target.value) || 2));
+    });
+    $('learn-bind-left').addEventListener('change', e => {
+        learnConfig.bindChannelLeft = Math.max(1, Math.min(16, parseInt(e.target.value) || 1));
+    });
+    $('learn-bind-right').addEventListener('change', e => {
+        learnConfig.bindChannelRight = Math.max(1, Math.min(16, parseInt(e.target.value) || 1));
+    });
+    $('learn-level').addEventListener('change', e => {
+        learnConfig.level = e.target.value;
+    });
+    $('learn-debug').addEventListener('click', learnDebugLightKey);
+
     // update UI clock
     setInterval(updateTime, 200);
 
@@ -54,8 +103,18 @@ function init() {
 function setMode(mode) {
     document.querySelectorAll('.mode').forEach(b => b.classList.remove('active'));
     document.querySelectorAll('#mode-content > div').forEach(d => d.classList.add('hidden'));
-    if (mode === 'play') { $('mode-play').classList.add('active'); $('play-mode').classList.remove('hidden'); }
-    else { $('mode-learn').classList.add('active'); $('learn-mode').classList.remove('hidden'); }
+    if (mode === 'play') {
+        learningMode = false;
+        learnStop();
+        $('mode-play').classList.add('active');
+        $('play-mode').classList.remove('hidden');
+    }
+    else {
+        learningMode = true;
+        learnInit();
+        $('mode-learn').classList.add('active');
+        $('learn-mode').classList.remove('hidden');
+    }
 }
 
 async function checkMidiPermission() {
@@ -146,8 +205,13 @@ function handleFile(e) {
 
 function loadMidi(arrayBuffer, name) {
     if (player) { player.stop(); player = null; }
+    learnStop();
     try {
         player = new MidiPlayer.Player(function (event) {
+            // In learning mode, capture events for key lighting
+            if (learningMode && learnConfig.level === 'follow') {
+                learnProcessEvent(event);
+            }
             // event handler: forward note on/off to selected output if channel allowed
             if (!midiOutput) return;
             if (!event.name) return;
@@ -182,6 +246,9 @@ function loadMidi(arrayBuffer, name) {
         try { if (!player.totalTicks && player.getTotalTicks) player.totalTicks = player.getTotalTicks(); } catch (e) { }
         // fallback: attempt to read player.totalTicks -> convert not implemented; keep slider 0-100 and update while playing
         seekSlider.value = 0;
+        
+        // populate channel selects for learning mode
+        learnPopulateChannelSelects();
     } catch (err) { console.error(err); alert('Failed to parse MIDI: ' + err); }
 }
 
@@ -200,6 +267,11 @@ function updateTime() {
     const pct = (max > 0) ? Math.min(100, (curr / max) * 100) : 0;
     seekSlider.value = isFinite(pct) ? pct : 0;
     timeLabel.innerText = curr.toFixed(2) + ' / ' + (max > 0 ? max.toFixed(2) : '??') + ' s';
+    
+    // Update learning mode key lighting
+    if (learningMode && learnConfig.level === 'follow' && player.isPlaying && player.isPlaying()) {
+        learnUpdateKeyLighting();
+    }
 }
 
 function onSeekChange(e) {
@@ -228,6 +300,242 @@ function sendAllNotesOff() {
         midiOutput.send([off, it.note, 0]);
     }
     activeNotes.clear();
+}
+
+// ============= Learning Mode Functions =============
+
+function learnInit() {
+    // Populate channel selects
+    learnPopulateChannelSelects();
+    // Set up MIDI input listener for key presses
+    if (midiInput) {
+        midiInput.onmidimessage = learnHandleMidiInput;
+    }
+    learnUpdateStatus('Learning mode ready');
+}
+
+function learnStop() {
+    if (learnState.blinkTimer) clearInterval(learnState.blinkTimer);
+    learnState.blinkTimer = null;
+    learnClearKeys('left');
+    learnClearKeys('right');
+    learnState.nextNotesLeft = [];
+    learnState.nextNotesRight = [];
+}
+
+function learnPopulateChannelSelects() {
+    const channels = [];
+    for (let i = 1; i <= 16; i++) {
+        channels.push(i);
+    }
+    
+    const leftSelect = $('learn-bind-left');
+    const rightSelect = $('learn-bind-right');
+    leftSelect.innerHTML = '';
+    rightSelect.innerHTML = '';
+    
+    channels.forEach(ch => {
+        const opt1 = document.createElement('option');
+        opt1.value = ch;
+        opt1.text = 'Channel ' + ch;
+        leftSelect.appendChild(opt1);
+        
+        const opt2 = document.createElement('option');
+        opt2.value = ch;
+        opt2.text = 'Channel ' + ch;
+        rightSelect.appendChild(opt2);
+    });
+    
+    leftSelect.value = learnConfig.bindChannelLeft;
+    rightSelect.value = learnConfig.bindChannelRight;
+}
+
+function learnUpdateStatus(msg) {
+    const status = $('learn-status');
+    if (status) status.innerText = msg;
+}
+
+function learnLightKey(hand, noteNumber, velocity) {
+    if (!midiOutput) return;
+    if (!learnConfig['light' + (hand === 'left' ? 'Left' : 'Right')]) return;
+    
+    const navCh = hand === 'left' ? learnConfig.navChannelLeft : learnConfig.navChannelRight;
+    const status = 0x90 | ((navCh - 1) & 0x0f);
+    
+    if (velocity > 0) {
+        console.debug('Lighting key', { hand, noteNumber, velocity });
+        midiOutput.send([status, noteNumber, velocity]);
+        learnState['litKeys' + (hand === 'left' ? 'Left' : 'Right')].add(noteNumber);
+    } else {
+        console.debug('Clearing key', { hand, noteNumber });
+        midiOutput.send([0x80 | ((navCh - 1) & 0x0f), noteNumber, 0]);
+        learnState['litKeys' + (hand === 'left' ? 'Left' : 'Right')].delete(noteNumber);
+    }
+}
+
+function learnClearKeys(hand) {
+    const keys = learnState['litKeys' + (hand === 'left' ? 'Left' : 'Right')];
+    for (const note of keys) {
+        learnLightKey(hand, note, 0);
+    }
+    keys.clear();
+}
+
+function learnDebugLightKey() {
+    const note = Math.floor(Math.random() * 88) + 21; // 88 keys on piano, starting from A0 (21)
+    const hand = Math.random() > 0.5 ? 'left' : 'right';
+    if (!midiOutput) return;
+
+    // Use a dedicated debug channel and mute it while the note is active so the keyboard can light silently.
+    const debugChannel = 3;
+    const status = 0xb0 | ((debugChannel - 1) & 0x0f);
+    const noteOn = 0x90 | ((debugChannel - 1) & 0x0f);
+    const noteOff = 0x80 | ((debugChannel - 1) & 0x0f);
+
+    // Channel volume 0 prevents audible output on most keyboards while still allowing LED feedback.
+    midiOutput.send([status, 7, 0]);
+    midiOutput.send([noteOn, note, 1]);
+
+    setTimeout(() => {
+        midiOutput.send([noteOff, note, 0]);
+        midiOutput.send([status, 7, 100]);
+    }, 250);
+}
+
+function learnProcessEvent(event) {
+    if (!event || !event.name) return;
+    
+    // Only process Note on events
+    if (event.name !== 'Note on' || !event.velocity || event.velocity === 0) return;
+    
+    const ch = event.channel || 1;
+    const note = event.noteNumber || event.note;
+    const hand = ch === learnConfig.bindChannelLeft ? 'left' : (ch === learnConfig.bindChannelRight ? 'right' : null);
+    
+    if (!hand) return;
+    
+    // Add to next notes queue
+    const queue = learnState['nextNotes' + (hand === 'left' ? 'Left' : 'Right')];
+    queue.push({
+        note: note,
+        tick: event.tick,
+        velocity: event.velocity
+    });
+}
+
+function learnHandleMidiInput(event) {
+    if (!learningMode || learnConfig.level !== 'follow') return;
+    
+    const [status, note, velocity] = event.data;
+    const ch = (status & 0x0f) + 1;
+    const isNoteOn = (status & 0xf0) === 0x90 && velocity > 0;
+    
+    if (!isNoteOn) return;
+    
+    // Check if this is a left or right hand key press
+    const isLeftHand = ch === learnConfig.navChannelLeft;
+    const isRightHand = ch === learnConfig.navChannelRight;
+    
+    if (!isLeftHand && !isRightHand) return;
+    
+    const hand = isLeftHand ? 'left' : 'right';
+    const queue = learnState['nextNotes' + (hand === 'left' ? 'Left' : 'Right')];
+    
+    if (queue.length === 0) return;
+    
+    const nextNote = queue[0];
+    const currentTick = player.getCurrentTick ? player.getCurrentTick() : 0;
+    
+    // Calculate beat timing (assuming 120 BPM, division gives us ticks per beat)
+    const beatTicks = player.division || 480;
+    const ticksSinceNote = currentTick - nextNote.tick;
+    
+    // Fast blink starts 1 beat (480 ticks at 120 BPM) before the note
+    const fastBlinkStartTick = nextNote.tick - beatTicks;
+    
+    // Correct if pressed within fast blink phase (within 1 beat of the note)
+    if (ticksSinceNote >= -beatTicks && ticksSinceNote <= beatTicks) {
+        learnUpdateStatus('✓ Correct! Note: ' + note);
+        queue.shift(); // Remove from queue
+        
+        // Turn off the lighting
+        learnClearKeys(hand);
+        
+        // Continue playing
+    } else if (ticksSinceNote < -beatTicks) {
+        learnUpdateStatus('⚠ Too early!');
+        // Pause the song
+        if (player && player.pause) player.pause();
+    } else if (ticksSinceNote > beatTicks) {
+        learnUpdateStatus('⚠ Too late!');
+        // Pause the song
+        if (player && player.pause) player.pause();
+    }
+}
+
+function learnUpdateKeyLighting() {
+    try {
+        const currentTick = player.getCurrentTick ? player.getCurrentTick() : 0;
+        const beatTicks = player.division || 480;
+        
+        // Update left hand
+        if (learnConfig.lightLeft) {
+            learnUpdateHandLighting('left', currentTick, beatTicks);
+        }
+        
+        // Update right hand
+        if (learnConfig.lightRight) {
+            learnUpdateHandLighting('right', currentTick, beatTicks);
+        }
+    } catch (e) {
+        console.warn('Learning mode lighting update error:', e);
+    }
+}
+
+function learnUpdateHandLighting(hand, currentTick, beatTicks) {
+    const queue = learnState['nextNotes' + (hand === 'left' ? 'Left' : 'Right')];
+    
+    if (queue.length === 0) {
+        learnClearKeys(hand);
+        return;
+    }
+    
+    const nextNote = queue[0];
+    const ticksUntilNote = nextNote.tick - currentTick;
+    
+    // Fast blink phase: 1 beat (beatTicks) before the note
+    const fastBlinkStartTick = beatTicks;
+    
+    if (ticksUntilNote <= 0) {
+        // Note has passed, remove it
+        queue.shift();
+        learnClearKeys(hand);
+        return;
+    }
+    
+    if (ticksUntilNote <= fastBlinkStartTick) {
+        // Fast blink phase: blink every 60ms (about 100ms on, 100ms off)
+        const blinkRate = 100;
+        const now = Date.now();
+        const blinkPhase = (now % (blinkRate * 2)) < blinkRate;
+        
+        if (blinkPhase) {
+            learnLightKey(hand, nextNote.note, nextNote.velocity);
+        } else {
+            learnClearKeys(hand);
+        }
+    } else {
+        // Slow blink phase: blink every 500ms (about 250ms on, 250ms off)
+        const blinkRate = 250;
+        const now = Date.now();
+        const blinkPhase = (now % (blinkRate * 2)) < blinkRate;
+        
+        if (blinkPhase) {
+            learnLightKey(hand, nextNote.note, nextNote.velocity);
+        } else {
+            learnClearKeys(hand);
+        }
+    }
 }
 
 window.addEventListener('load', init);
