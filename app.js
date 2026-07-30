@@ -13,6 +13,11 @@ let timeLabel = null;
 let activeNotes = new Map();
 let allowedChannels = new Array(16).fill(true);
 
+// Seeking state
+let seekResumeTimer = null;
+let seekWasPlaying = false;
+let seekInProgress = false;
+
 // Learning mode state
 let learningMode = false;
 let learnConfig = {
@@ -327,6 +332,43 @@ function loadMidi(arrayBuffer, name) {
         });
 
         player.loadArrayBuffer(arrayBuffer);
+        if (player.on) {
+    player.on('endOfFile', () => {
+        console.debug('[player] End of file reached; stopping and resetting transport');
+
+        if (seekResumeTimer) {
+            clearTimeout(seekResumeTimer);
+            seekResumeTimer = null;
+        }
+
+        seekInProgress = false;
+        seekWasPlaying = false;
+
+        try {
+            player.pause();
+        } catch (_) {}
+
+        // Make absolutely sure no MIDI notes remain held.
+        sendAllNotesOff();
+
+        try {
+            if (player.resetTracks) {
+                player.resetTracks();
+            }
+
+            player.tick = 0;
+        } catch (_) {}
+
+        seekSlider.value = 0;
+
+        timeLabel.innerText =
+            '0.00 / ' +
+            (totalSeconds > 0 ? totalSeconds.toFixed(2) : '??') +
+            ' s';
+    });
+}
+
+
         loaded = true;
         $('file-info').innerText = 'Loaded: ' + name;
 
@@ -379,17 +421,41 @@ function updateTime() {
 function onSeekChange(e) {
     if (!player || !loaded) return;
 
-    const pct = parseFloat(e.target.value);
-    const wasPlaying = player.isPlaying && player.isPlaying();
-    const targetTick = player.totalTicks ? Math.floor(player.totalTicks * (pct / 100)) : 0;
+    const pct = Math.max(0, Math.min(100, parseFloat(e.target.value) || 0));
 
+    // Pause before moving the MidiPlayerJS event pointers.
+    // Otherwise skipped events can be emitted all at once.
+    if (!seekInProgress) {
+        seekWasPlaying = !!(player.isPlaying && player.isPlaying());
+        seekInProgress = true;
+    }
+
+    if (seekResumeTimer) {
+        clearTimeout(seekResumeTimer);
+        seekResumeTimer = null;
+    }
+
+    try {
+        if (player.pause) player.pause();
+    } catch (_) {}
+
+    // Stop any notes that were playing before the seek.
     sendAllNotesOff();
+
+    const targetTick = player.totalTicks
+        ? Math.floor(player.totalTicks * (pct / 100))
+        : 0;
 
     try {
         if (player.skipToSeconds && totalSeconds) {
             player.skipToSeconds(totalSeconds * (pct / 100));
-        } else if (player.skipToTick) {
-            if (player.totalTicks) player.skipToTick(targetTick);
+        } else if (player.skipToTick && player.totalTicks) {
+            player.skipToTick(targetTick);
+        }
+
+        // Keep the transport position explicitly synchronized.
+        if (typeof player.tick === 'number') {
+            player.tick = targetTick;
         }
     } catch (err) {
         console.warn('seek error', err);
@@ -399,9 +465,25 @@ function onSeekChange(e) {
         learnSyncQueuesToTick(targetTick);
     }
 
-    try {
-        if (wasPlaying && player.play) player.play();
-    } catch (_) { }
+    // Wait until the slider stops moving before resuming playback.
+    seekResumeTimer = setTimeout(() => {
+        seekResumeTimer = null;
+
+        if (!seekInProgress) return;
+
+        const shouldResume = seekWasPlaying;
+
+        seekInProgress = false;
+        seekWasPlaying = false;
+
+        if (shouldResume && player && player.play) {
+            try {
+                player.play();
+            } catch (err) {
+                console.warn('Failed to resume after seek', err);
+            }
+        }
+    }, 60);
 }
 
 function sendAllNotesOff() {
