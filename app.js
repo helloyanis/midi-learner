@@ -665,6 +665,7 @@ function learnLightKey(hand, noteNumber, velocity, keepLit = false) {
         midiOutput.send([noteOn, noteNumber, 1]);
         learnState['litKeys' + (hand === 'left' ? 'Left' : 'Right')].add(noteNumber);
         if (!keepLit) {
+            console.debug('[learnLightKey] Scheduling auto-off for %s hand note %d', hand, noteNumber);
             setTimeout(() => {
                 midiOutput.send([noteOff, noteNumber, 0]);
                 midiOutput.send([ccStatus, 7, 100]);
@@ -689,7 +690,7 @@ function learnDebugLightKey() {
     if (!midiOutput) return;
 
     const note = Math.floor(Math.random() * 88) + 21;
-    const debugChannel = 3;
+    const debugChannel = 15;
     const ccStatus = 0xb0 | ((debugChannel - 1) & 0x0f);
     const noteOn = 0x90 | ((debugChannel - 1) & 0x0f);
 
@@ -721,13 +722,7 @@ function learnHandleMidiInput(event) {
         const groupTick = group[0].tick;
         const ticksUntilNote = groupTick - currentTick;
 
-        const playerPaused = !!(player && player.isPlaying && !player.isPlaying());
-        const lateGraceTicks = Math.max(1, Math.floor(beatTicks * 0.2));
-
-        // While playing, only accept presses that occur within one beat before the note.
-        // If playback is paused because the note was missed, allow the correct press to resume.
-        // Also allow a small late grace window to avoid edge races near pause checks.
-        if (!playerPaused && (ticksUntilNote < -lateGraceTicks || ticksUntilNote > beatTicks)) continue;
+        if (ticksUntilNote > beatTicks) continue;
 
         const matched = group.find(n => n.note === note);
         if (!matched) continue;
