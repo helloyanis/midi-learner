@@ -128,23 +128,13 @@ function init() {
             learnBuildSongQueues();
         }
     });
-    $('learn-debug').addEventListener('click', learnDebugLightKey);
-    $('learn-play').addEventListener('click', () => {
-        console.debug('[learnPlay] Starting playback in learning mode');
-        if (!player || !learningMode) return;
-        const currentTick = player.getCurrentTick ? player.getCurrentTick() : 0;
-        const beatTicks = player && player.division ? player.division : 480;
-        const startTick = currentTick + beatTicks;
-        console.debug('[learnPlay] syncing queues to', startTick);
-        learnSyncQueuesToTick(startTick);
-        learnBindInputHandler();
-        learnUpdateKeyLighting();
-        player.play();
-    });
-    $('learn-pause').addEventListener('click', () => {
-        console.debug('[learnPause] Pausing playback in learning mode');
-        if (player && learningMode) player.pause();
-        sendAllNotesOff();
+    $('learn-debug').addEventListener('click', () => {
+        const debugChannel = prompt('Enter debug channel (1-16):', '15');
+        if (debugChannel) {
+            learnDebugLightKey(parseInt(debugChannel, 10));
+        } else {
+            learnDebugLightKey();
+        }
     });
 
     // Faster follow-mode updates reduce missed-light and late-pause race conditions.
@@ -667,6 +657,12 @@ function learnLightKey(hand, noteNumber, velocity, keepLit = false) {
         if (!keepLit) {
             console.debug('[learnLightKey] Scheduling auto-off for %s hand note %d', hand, noteNumber);
             setTimeout(() => {
+                // If playback is paused, this may be because of learning mode's missed-note pause, so don't turn off the key yet.
+                if (player && player.isPlaying && !player.isPlaying()) {
+                    console.debug('[learnLightKey] Playback paused; skipping auto-off for %s hand note %d', hand, noteNumber);
+                    return;
+                }
+                console.debug('[learnLightKey] Auto-off for %s hand note %d', hand, noteNumber);
                 midiOutput.send([noteOff, noteNumber, 0]);
                 midiOutput.send([ccStatus, 7, 100]);
             }, 75);
@@ -686,16 +682,17 @@ function learnClearKeys(hand) {
     keys.clear();
 }
 
-function learnDebugLightKey() {
-    if (!midiOutput) return;
+function learnDebugLightKey(debugChannel = 15) {
+    if (!midiOutput) return console.warn('[learnDebugLightKey] No MIDI output available for debug lighting');
 
     const note = Math.floor(Math.random() * 88) + 21;
-    const debugChannel = 15;
     const ccStatus = 0xb0 | ((debugChannel - 1) & 0x0f);
     const noteOn = 0x90 | ((debugChannel - 1) & 0x0f);
 
     midiOutput.send([ccStatus, 7, 0]);
     midiOutput.send([noteOn, note, 1]);
+
+    console.debug('[learnDebugLightKey] Debug lighting note %d on channel %d', note, debugChannel);
 
     setTimeout(() => {
         midiOutput.send([ccStatus, 7, 100]);
