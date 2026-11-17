@@ -46,6 +46,10 @@ function init() {
     $('midi-outputs').addEventListener('change', e => selectOutput(e.target.value));
     $('midi-inputs').addEventListener('change', e => selectInput(e.target.value));
 
+    // Check default value of the MIDI file input to see if a file was preloaded (e.g., via drag-and-drop or file input value persistence)
+    if ($('midi-file').files && $('midi-file').files.length > 0) {
+        handleFile({ target: $('midi-file') });
+    }
     $('midi-file').addEventListener('change', handleFile);
     $('play').addEventListener('click', () => {
         console.debug('[play] Play button pressed');
